@@ -524,42 +524,7 @@ namespace DeviceExplorer
                 var events = await eventHubReceiver.ReceiveAsync(int.MaxValue, TimeSpan.FromSeconds(20));
 
                 foreach (var eventData in events)
-                {
-                    var data = Encoding.UTF8.GetString(eventData.GetBytes());
-                    var enqueuedTime = eventData.EnqueuedTimeUtc.ToLocalTime();
-                    var connectionDeviceId = eventData.SystemProperties["iothub-connection-device-id"].ToString();
-
-                    if (string.CompareOrdinal(selectedDevice.ToUpper(), connectionDeviceId.ToUpper()) == 0)
-                    {
-                        eventHubTextBox.Text += $"{enqueuedTime}> Device: [{connectionDeviceId}], Data:[{data}]";
-
-                        if (eventData.Properties.Count > 0)
-                        {
-                            eventHubTextBox.Text += "Properties:\r\n";
-                            foreach (var property in eventData.Properties)
-                            {
-                                eventHubTextBox.Text += $"'{property.Key}': '{property.Value}'\r\n";
-                            }
-                        }
-                        if (enableSystemProperties.Checked)
-                        {
-                            if (eventData.Properties.Count == 0)
-                            {
-                                eventHubTextBox.Text += "\r\n";
-                            }
-                            foreach (var item in eventData.SystemProperties)
-                            {
-                                eventHubTextBox.Text += $"SYSTEM>{item.Key}={item.Value}\r\n";
-                            }
-                        }
-                        eventHubTextBox.Text += "\r\n";
-
-                        // scroll text box to last line by moving caret to the end of the text
-                        eventHubTextBox.SelectionStart = eventHubTextBox.Text.Length - 1;
-                        eventHubTextBox.SelectionLength = 0;
-                        eventHubTextBox.ScrollToCaret();
-                    }
-                }
+                    ProcessEventData(selectedDevice, eventData);
 
                 Func<bool> processor = new Func<bool>(()=>ProcessOutput(eventHubReceiver, selectedDevice, ct));
                 await Task.Run(processor, ct);
@@ -603,60 +568,93 @@ namespace DeviceExplorer
                 var eventData = eventHubReceiver.ReceiveAsync(TimeSpan.FromSeconds(1)).Result;
 
                 if (eventData != null)
-                {
-                    var data = Encoding.UTF8.GetString(eventData.GetBytes());
-                    var enqueuedTime = eventData.EnqueuedTimeUtc.ToLocalTime();
-                    var connectionDeviceId = eventData.SystemProperties["iothub-connection-device-id"].ToString();
-
-                    if (string.CompareOrdinal(selectedDevice, connectionDeviceId) == 0)
-                    {
-                        DumpData($"{enqueuedTime}> Device: [{connectionDeviceId}], Data:[{data}]");
-
-                        if (eventData.Properties.Count > 0)
-                        {
-                            DumpData("Properties:\r\n");
-                            foreach (var property in eventData.Properties)
-                            {
-                                DumpData($"'{property.Key}': '{property.Value}'\r\n");
-                            }
-                        }
-
-                        if (enableSystemProperties.Checked)
-                        {
-                            if (eventData.Properties.Count == 0)
-                            {
-                                DumpData("\r\n");
-                            }
-                            foreach (var item in eventData.SystemProperties)
-                            {
-                                DumpData($"SYSTEM>{item.Key}={item.Value}\r\n");
-                            }
-                        }
-                        DumpData("\r\n");
-                    }
-                }
+                    ProcessEventData(selectedDevice, eventData);
             }
             return true;
         }
+
+        private void ProcessEventData(string selectedDevice, EventData eventData)
+        {
+            var bytes = eventData.GetBytes();
+            bytes = IsCompressed(eventData) ? Decompress(bytes) : bytes;
+            var data = Encoding.UTF8.GetString(bytes);
+            var enqueuedTime = eventData.EnqueuedTimeUtc.ToLocalTime();
+            var connectionDeviceId = eventData.SystemProperties["iothub-connection-device-id"].ToString();
+
+            if (string.CompareOrdinal(selectedDevice.ToUpper(), connectionDeviceId.ToUpper()) == 0)
+            {
+                DumpData($"{enqueuedTime}> Device: [{connectionDeviceId}], Data:[{data}]\r\n");
+
+                DumpData(string.Format("IsJSON:{0}\r\n", isInJsonFormat(data)));
+
+                if (eventData.Properties.Count > 0)
+                {
+                    DumpData("Properties:\r\n");
+                    foreach (var property in eventData.Properties)
+                    {
+                        DumpData($"'{property.Key}': '{property.Value}'\r\n");
+                    }
+                }
+
+                if (enableSystemProperties.Checked)
+                {
+                    if (eventData.Properties.Count == 0)
+                    {
+                        DumpData("\r\n");
+                    }
+                    foreach (var item in eventData.SystemProperties)
+                    {
+                        DumpData($"SYSTEM>{item.Key}={item.Value}\r\n");
+                    }
+                }
+                DumpData("\r\n");
+
+                DisplayAction(() =>
+                {
+                    // scroll text box to last line by moving caret to the end of the text
+                    eventHubTextBox.SelectionStart = eventHubTextBox.Text.Length - 1;
+                    eventHubTextBox.SelectionLength = 0;
+                    eventHubTextBox.ScrollToCaret();
+                });
+            }
+        }
+
+        private static bool IsCompressed(EventData eventData)
+        {
+            return eventData.Properties.ContainsKey("Compressed") && Convert.ToBoolean(eventData.Properties["Compressed"]);
+        }
+
+        public static byte[] Decompress(byte[] bytes)
+        {
+            using (var msi = new System.IO.MemoryStream(bytes))
+            using (var mso = new System.IO.MemoryStream())
+            {
+                using (var gs = new System.IO.Compression.GZipStream(msi, System.IO.Compression.CompressionMode.Decompress))
+                {
+                    gs.CopyTo(mso);
+                }
+                return mso.ToArray();
+            }
+        }
+
 
         public delegate void DataToTextBox(string text);
 
         private void DumpData(string output)
         {
             Debug.WriteLine(output);
+            DisplayAction(() => eventHubTextBox.Text += output);
+        }
 
+        private void DisplayAction(Action a)
+        {
             if (eventHubTextBox.InvokeRequired)
             {
-                eventHubTextBox.Invoke(new DataToTextBox(DumpData), new object[] { output });
+                eventHubTextBox.Invoke(a);
             }
             else
             {
-                eventHubTextBox.Text += output;
-
-                // scroll text box to last line by moving caret to the end of the text
-                eventHubTextBox.SelectionStart = eventHubTextBox.Text.Length - 1;
-                eventHubTextBox.SelectionLength = 0;
-                eventHubTextBox.ScrollToCaret();
+                a();
             }
         }
 
