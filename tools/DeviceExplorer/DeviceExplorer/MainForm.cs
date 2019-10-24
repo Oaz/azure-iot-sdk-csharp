@@ -575,14 +575,15 @@ namespace DeviceExplorer
 
         private void ProcessEventData(string selectedDevice, EventData eventData)
         {
-            var bytes = eventData.GetBytes();
-            bytes = IsCompressed(eventData) ? Decompress(bytes) : bytes;
-            var data = Encoding.UTF8.GetString(bytes);
-            var enqueuedTime = eventData.EnqueuedTimeUtc.ToLocalTime();
             var connectionDeviceId = eventData.SystemProperties["iothub-connection-device-id"].ToString();
 
             if (string.CompareOrdinal(selectedDevice.ToUpper(), connectionDeviceId.ToUpper()) == 0)
             {
+                var bytes = eventData.GetBytes();
+                var rawData = Encoding.UTF8.GetString(bytes);
+                var data = IsCompressed(eventData) ? DecompressData(rawData) : rawData;
+                var enqueuedTime = eventData.EnqueuedTimeUtc.ToLocalTime();
+
                 DumpData($"{enqueuedTime}> Device: [{connectionDeviceId}], Data:[{data}]\r\n");
 
                 DumpData(string.Format("IsJSON:{0}\r\n", isInJsonFormat(data)));
@@ -624,8 +625,20 @@ namespace DeviceExplorer
             return eventData.Properties.ContainsKey("Compressed") && Convert.ToBoolean(eventData.Properties["Compressed"]);
         }
 
-        public static byte[] Decompress(byte[] bytes)
+        public string DecompressData(string rawData)
         {
+            DumpData("\r\nSize of CompressedData " + rawData.Length);
+            var decompressedBytes = Decompress(rawData);
+            var encoding = Encodings.Detect(decompressedBytes);
+            DumpData("\r\nEncoding detection on Non Compressed Data: " + encoding.EncodingName);
+            var decompressedData = Encoding.UTF8.GetString(decompressedBytes);
+            DumpData("\r\nSize of Non Compressed Data " + decompressedData.Length + "\r\n");
+            return decompressedData;
+        }
+
+        public static byte[] Decompress(string compressedData)
+        {
+            var bytes = Convert.FromBase64String(compressedData);
             using (var msi = new System.IO.MemoryStream(bytes))
             using (var mso = new System.IO.MemoryStream())
             {
@@ -637,8 +650,20 @@ namespace DeviceExplorer
             }
         }
 
+        public static string Compress(Encoding encodedIn, string rawData)
+        {
+            var bytes = encodedIn.GetBytes(rawData);
+            using (var msi = new System.IO.MemoryStream(bytes))
+            using (var mso = new System.IO.MemoryStream())
+            {
+                using (var gs = new System.IO.Compression.GZipStream(mso, System.IO.Compression.CompressionMode.Compress))
+                {
+                    msi.CopyTo(gs);
+                }
+                return Convert.ToBase64String(mso.ToArray());
+            }
+        }
 
-        public delegate void DataToTextBox(string text);
 
         private void DumpData(string output)
         {
